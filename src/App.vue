@@ -5,8 +5,15 @@ import * as XLSX from 'xlsx'
 import { jsPDF } from 'jspdf'
 import { applyPlugin } from 'jspdf-autotable'
 
+// Tabulator's PDF downloader expects jsPDF to have the autoTable plugin installed.
+// Importing jspdf-autotable is not enough by itself in this module-based setup; calling
+// applyPlugin mutates the jsPDF constructor so Tabulator can call doc.autoTable(...)
+// during PDF export.
 applyPlugin(jsPDF)
 
+// Vue owns the page-level controls and modal state. Tabulator owns the table DOM.
+// The ref below is the bridge between the two: Vue renders an empty div, then
+// Tabulator mounts its grid into that div in onMounted().
 const tableEl = ref(null)
 const globalSearch = ref('')
 const statusFilter = ref('')
@@ -14,178 +21,141 @@ const exportFormat = ref('csv')
 const activeSort = ref('Date descending')
 const selectedReceipt = ref(null)
 
+// Keep the Tabulator instance outside Vue reactivity. The instance is a complex
+// imperative object with circular references and DOM handles, so making it reactive
+// adds overhead without benefit. Vue only needs to hold simple UI state.
 let table = null
 
-const transactions = [
-  {
-    id: 'TX-1042',
-    date: '2026-05-30',
-    student: 'Maya Chen',
-    exam: 'Computer Science Placement Exam',
-    method: 'ACH',
-    status: 'Paid',
-    amount: 185.0,
-  },
-  {
-    id: 'TX-1043',
-    date: '2026-05-29',
-    student: 'Noah Patel',
-    exam: 'Business Analytics Certification',
-    method: 'Card',
-    status: 'Pending',
-    amount: 260.0,
-  },
-  {
-    id: 'TX-1044',
-    date: '2026-05-28',
-    student: 'Isabella Garcia',
-    exam: 'Nursing Entrance Exam',
-    method: 'Scholarship',
-    status: 'Paid',
-    amount: 125.0,
-  },
-  {
-    id: 'TX-1045',
-    date: '2026-05-27',
-    student: 'Liam Brooks',
-    exam: 'Architecture Portfolio Review',
-    method: 'Card',
-    status: 'Refunded',
-    amount: -95.0,
-  },
-  {
-    id: 'TX-1046',
-    date: '2026-05-26',
-    student: 'Ava Thompson',
-    exam: 'Biology Lab Practical',
-    method: 'Wire',
-    status: 'Paid',
-    amount: 150.0,
-  },
-  {
-    id: 'TX-1047',
-    date: '2026-05-25',
-    student: 'Ethan Wilson',
-    exam: 'Economics Qualifying Exam',
-    method: 'Cash',
-    status: 'Failed',
-    amount: 75.0,
-  },
-  {
-    id: 'TX-1048',
-    date: '2026-05-24',
-    student: 'Sophia Nguyen',
-    exam: 'Design Studio Assessment',
-    method: 'ACH',
-    status: 'Pending',
-    amount: 210.0,
-  },
-  {
-    id: 'TX-1049',
-    date: '2026-05-23',
-    student: 'Jackson Rivera',
-    exam: 'Mechanical Engineering Fundamentals',
-    method: 'Scholarship',
-    status: 'Paid',
-    amount: 325.0,
-  },
-  {
-    id: 'TX-1050',
-    date: '2026-05-22',
-    student: 'Amelia Carter',
-    exam: 'Psychology Methods Exam',
-    method: 'Card',
-    status: 'Paid',
-    amount: 140.0,
-  },
-  {
-    id: 'TX-1051',
-    date: '2026-05-21',
-    student: 'Lucas Kim',
-    exam: 'Computer Science Placement Exam',
-    method: 'ACH',
-    status: 'Failed',
-    amount: 185.0,
-  },
-  {
-    id: 'TX-1052',
-    date: '2026-05-20',
-    student: 'Charlotte Hayes',
-    exam: 'English Composition Exam',
-    method: 'Wire',
-    status: 'Pending',
-    amount: 110.0,
-  },
-  {
-    id: 'TX-1053',
-    date: '2026-05-19',
-    student: 'Benjamin Foster',
-    exam: 'Chemistry Lab Practical',
-    method: 'Card',
-    status: 'Paid',
-    amount: 135.0,
-  },
-  {
-    id: 'TX-1054',
-    date: '2026-05-18',
-    student: 'Harper Allen',
-    exam: 'Music Theory Placement',
-    method: 'Cash',
-    status: 'Refunded',
-    amount: -80.0,
-  },
-  {
-    id: 'TX-1055',
-    date: '2026-05-17',
-    student: 'Daniel Morgan',
-    exam: 'Data Science Capstone Exam',
-    method: 'ACH',
-    status: 'Paid',
-    amount: 375.0,
-  },
-  {
-    id: 'TX-1056',
-    date: '2026-05-16',
-    student: 'Mia Sullivan',
-    exam: 'Public Health Board Prep',
-    method: 'Card',
-    status: 'Pending',
-    amount: 195.0,
-  },
-  {
-    id: 'TX-1057',
-    date: '2026-05-15',
-    student: 'Henry Ortiz',
-    exam: 'Political Science Comprehensive',
-    method: 'Wire',
-    status: 'Paid',
-    amount: 225.0,
-  },
-  {
-    id: 'TX-1058',
-    date: '2026-05-14',
-    student: 'Ella Reed',
-    exam: 'Theater Audition Review',
-    method: 'ACH',
-    status: 'Failed',
-    amount: 95.0,
-  },
-  {
-    id: 'TX-1059',
-    date: '2026-05-13',
-    student: 'Owen Murphy',
-    exam: 'Civil Engineering Fundamentals',
-    method: 'Scholarship',
-    status: 'Paid',
-    amount: 325.0,
-  },
+// Increase or decrease this value to performance-test Tabulator with different
+// client-side data sizes. The rows are generated in memory on page load so this demo
+// has no backend dependency and always produces the same dataset.
+const TRANSACTION_COUNT = 50000
+
+// These lookup arrays are intentionally small. The generator combines them with
+// different index multipliers to create a large but repeatable dataset with enough
+// variation for sorting, filtering, pagination, and export testing.
+const firstNames = [
+  'Maya',
+  'Noah',
+  'Isabella',
+  'Liam',
+  'Ava',
+  'Ethan',
+  'Sophia',
+  'Jackson',
+  'Amelia',
+  'Lucas',
+  'Charlotte',
+  'Benjamin',
+  'Harper',
+  'Daniel',
+  'Mia',
+  'Henry',
+  'Ella',
+  'Owen',
+  'Nora',
+  'Mateo',
 ]
 
+const lastNames = [
+  'Chen',
+  'Patel',
+  'Garcia',
+  'Brooks',
+  'Thompson',
+  'Wilson',
+  'Nguyen',
+  'Rivera',
+  'Carter',
+  'Kim',
+  'Hayes',
+  'Foster',
+  'Allen',
+  'Morgan',
+  'Sullivan',
+  'Ortiz',
+  'Reed',
+  'Murphy',
+  'Bennett',
+  'Okafor',
+]
+
+const exams = [
+  'Computer Science Placement Exam',
+  'Business Analytics Certification',
+  'Nursing Entrance Exam',
+  'Architecture Portfolio Review',
+  'Biology Lab Practical',
+  'Economics Qualifying Exam',
+  'Design Studio Assessment',
+  'Mechanical Engineering Fundamentals',
+  'Psychology Methods Exam',
+  'English Composition Exam',
+  'Chemistry Lab Practical',
+  'Music Theory Placement',
+  'Data Science Capstone Exam',
+  'Public Health Board Prep',
+  'Political Science Comprehensive',
+  'Theater Audition Review',
+  'Civil Engineering Fundamentals',
+]
+
+const methods = ['ACH', 'Card', 'Scholarship', 'Wire', 'Cash']
+const statuses = ['Paid', 'Pending', 'Failed', 'Refunded']
+const feeAmounts = [75, 95, 110, 125, 135, 150, 185, 195, 210, 225, 260, 325, 375]
+
+function formatDate(date) {
+  // Tabulator's date sorter handles ISO-style YYYY-MM-DD strings well, and keeping
+  // dates as strings avoids timezone display differences in the rendered table.
+  return date.toISOString().slice(0, 10)
+}
+
+function generateTransactions(count) {
+  const startDate = new Date('2026-05-30T12:00:00Z')
+
+  return Array.from({ length: count }, (_, index) => {
+    // The modulo arithmetic below makes the fake data deterministic. This matters for
+    // performance testing because a reload should not change the row distribution or
+    // make a filter/sort feel faster or slower due only to random data.
+    const status = statuses[index % statuses.length]
+    const date = new Date(startDate)
+    date.setDate(startDate.getDate() - (index % 365))
+
+    return {
+      id: `TX-${String(1042 + index).padStart(6, '0')}`,
+      date: formatDate(date),
+      student: `${firstNames[index % firstNames.length]} ${
+        lastNames[(index * 7) % lastNames.length]
+      }`,
+      exam: exams[(index * 5) % exams.length],
+      method: methods[(index * 3) % methods.length],
+      status,
+      // Refunded rows are represented as negative amounts so the amount formatter,
+      // bottom sum calculation, sort order, and exports all have realistic values to
+      // work with.
+      amount:
+        status === 'Refunded'
+          ? -feeAmounts[index % feeAmounts.length]
+          : feeAmounts[index % feeAmounts.length],
+    }
+  })
+}
+
+// Generate the full dataset once when the module loads. Tabulator receives this array
+// at initialization and then applies its own client-side filtering, sorting, and
+// pagination over the in-memory data.
+const transactions = generateTransactions(TRANSACTION_COUNT)
+
+// Reuse one formatter for table cells, bottom calculations, receipt modal values,
+// and any future currency UI so formatting remains consistent.
 const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
 })
 
+// CSS class mapping used by both Tabulator cell formatters and the Vue receipt modal.
+// Keeping the status-to-class mapping in one place avoids duplicating style decisions
+// between imperative Tabulator code and declarative Vue template code.
 const statusClass = {
   Paid: 'status-paid',
   Pending: 'status-pending',
@@ -200,12 +170,19 @@ function applyFilters() {
   const status = statusFilter.value
 
   if (!search && !status) {
+    // When both top-level controls are empty, remove only the programmatic filters.
+    // Header filters are cleared separately by clearFilters(), because users may use
+    // Tabulator's built-in column filters independently from these Vue controls.
     table.clearFilter()
     return
   }
 
   table.setFilter(
     (data, params) => {
+      // This custom filter combines two concepts:
+      // 1. global text search across selected fields
+      // 2. exact status matching from the dropdown
+      // Tabulator runs this predicate against each active row when filters change.
       const matchesSearch =
         !params.search ||
         ['id', 'student', 'exam', 'method'].some((field) =>
@@ -220,6 +197,8 @@ function applyFilters() {
 }
 
 function clearFilters() {
+  // Clear Vue-controlled filters and Tabulator header filters together so the table
+  // returns to its original unfiltered state from a single button.
   globalSearch.value = ''
   statusFilter.value = ''
   table?.clearHeaderFilter()
@@ -227,11 +206,16 @@ function clearFilters() {
 }
 
 function sortBy(field, dir, label) {
+  // These buttons are shortcuts for common sort states. Users can still click any
+  // column header directly because Tabulator's built-in header sorting remains enabled.
   table?.setSort(field, dir)
   activeSort.value = label
 }
 
 function viewReceipt(transaction) {
+  // Row actions are handled from Tabulator's cellClick callback, but the modal is
+  // rendered by Vue. Storing the row data here bridges the imperative table event into
+  // declarative Vue rendering.
   selectedReceipt.value = transaction
 }
 
@@ -240,6 +224,8 @@ function closeReceipt() {
 }
 
 function handleEscape(event) {
+  // The modal also closes from backdrop click and the close button. Escape support is
+  // added at document level so it works regardless of which modal element has focus.
   if (event.key === 'Escape') {
     closeReceipt()
   }
@@ -249,6 +235,10 @@ function downloadTable() {
   if (!table) return
 
   const format = exportFormat.value
+  // Tabulator uses the selected download type plus a format-specific options object.
+  // CSV/JSON work without extra options. HTML can include styles. XLSX needs a sheet
+  // name. PDF uses jspdf-autotable configuration for title, orientation, margins, and
+  // basic table styling.
   const exportOptions = {
     csv: {},
     json: {},
@@ -279,24 +269,40 @@ function downloadTable() {
     },
   }
 
+  // By default Tabulator downloads the active rows, meaning current filters/sorts are
+  // reflected in the export. The Actions column is marked download:false below so UI
+  // buttons do not appear in exported files.
   table.download(format, `campus-exam-payments.${format}`, exportOptions[format])
 }
 
 onMounted(() => {
+  // Create the Tabulator instance only after Vue has mounted the tableEl div. Before
+  // this hook runs, tableEl.value is null because the DOM node does not exist yet.
   table = new Tabulator(tableEl.value, {
     data: transactions,
+    // Dependencies are passed explicitly for module bundlers. Tabulator can look for
+    // window.XLSX/window.jspdf in script-tag setups, but Vite bundles dependencies as
+    // modules, so registering them here makes XLSX/PDF export work reliably.
     dependencies: {
       XLSX,
       jspdf: { jsPDF },
     },
+    // fitColumns uses the available table width and keeps this desktop demo from
+    // scrolling horizontally at normal viewport sizes. responsiveLayout is disabled so
+    // every transaction remains one row instead of collapsing columns into child rows.
     layout: 'fitColumns',
     responsiveLayout: false,
+    // Pagination keeps the 50,000-row dataset usable in the browser. Tabulator still
+    // holds the full data array client-side, but only renders the current page.
     pagination: true,
-    paginationSize: 8,
-    paginationSizeSelector: [8, 12, 18],
+    paginationSize: 10,
+    paginationSizeSelector: [10, 20, 50],
     movableColumns: true,
     initialSort: [{ column: 'date', dir: 'desc' }],
     placeholder: 'No transactions match the current filters.',
+    // Column definitions are the contract between the data shape and Tabulator. Each
+    // field maps to a property generated in generateTransactions(). Header filters are
+    // Tabulator-native controls, separate from the Vue global/status filters above.
     columns: [
       {
         title: 'Transaction',
@@ -342,6 +348,9 @@ onMounted(() => {
         headerFilter: 'list',
         headerFilterParams: { valuesLookup: true, clearable: true },
         formatter(cell) {
+          // Formatters return HTML strings because Tabulator renders outside Vue's
+          // template system. Keep this markup simple and avoid injecting user-provided
+          // HTML here in real applications.
           const value = cell.getValue()
           return `<span class="status-pill ${statusClass[value]}">${value}</span>`
         },
@@ -355,6 +364,9 @@ onMounted(() => {
         headerHozAlign: 'right',
         bottomCalc: 'sum',
         formatter(cell) {
+          // The amount column uses semantic coloring for positive vs. refunded values.
+          // The raw value remains numeric, so sorting, bottom calculations, and exports
+          // still operate on numbers rather than formatted currency strings.
           const value = cell.getValue()
           const className = value < 0 ? 'amount-negative' : 'amount-positive'
           return `<span class="${className}">${currencyFormatter.format(value)}</span>`
@@ -372,9 +384,15 @@ onMounted(() => {
         headerSort: false,
         download: false,
         formatter() {
+          // The action button is table UI only. It is excluded from exports with
+          // download:false because exported files should contain transaction data, not
+          // controls.
           return '<button class="row-action" type="button">Receipt</button>'
         },
         cellClick(event, cell) {
+          // Stop propagation so the button click does not accidentally trigger any
+          // future row-level click handlers. The row data is passed to Vue to open the
+          // receipt modal.
           event.stopPropagation()
           viewReceipt(cell.getRow().getData())
         },
@@ -383,10 +401,16 @@ onMounted(() => {
     ],
   })
 
+  // Register global listeners after the table is created, and remove them in
+  // onBeforeUnmount() below. This prevents stale listeners if the component is ever
+  // mounted/unmounted by a router or parent app.
   document.addEventListener('keydown', handleEscape)
 })
 
 onBeforeUnmount(() => {
+  // Clean up both Vue-managed global listeners and the Tabulator instance. destroy()
+  // removes Tabulator's DOM/event work so hot reloads, route changes, or tests do not
+  // leave orphaned table instances behind.
   document.removeEventListener('keydown', handleEscape)
   table?.destroy()
   table = null
@@ -395,13 +419,21 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="page-shell">
+    <!--
+      Hero area:
+      - Left side introduces the demo and clarifies that it is intentionally loaded
+        with 50,000 generated records for performance testing.
+      - Right side contains export controls because exports operate on the table as a
+        whole rather than on a specific row.
+    -->
     <section class="hero">
       <div>
         <p class="eyebrow">Vue 3 + Tabulator</p>
         <h1>Tabulator Table Demo</h1>
         <p class="hero-copy">
           A single-page Vue demo showing Tabulator sorting, column filtering, global
-          filtering, pagination, row actions, movable columns, and downloads.
+          filtering, pagination, row actions, movable columns, downloads, and
+          50,000 generated records.
         </p>
       </div>
 
@@ -422,6 +454,11 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <!--
+      Top-level controls:
+      These are Vue-controlled inputs that call Tabulator methods. They complement
+      Tabulator's header filters, which are rendered inside the table headers.
+    -->
     <section class="control-panel" aria-label="Table controls">
       <label class="field search-field">
         <span>Global filter</span>
@@ -462,6 +499,11 @@ onBeforeUnmount(() => {
       </button>
     </section>
 
+    <!--
+      Table host:
+      Vue renders only this container. Tabulator takes over the element referenced by
+      tableEl and imperatively renders headers, rows, pagination, and footer controls.
+    -->
     <section class="table-card">
       <div class="table-card-header">
         <div>
@@ -476,6 +518,12 @@ onBeforeUnmount(() => {
       <div ref="tableEl" class="transaction-table"></div>
     </section>
 
+    <!--
+      Receipt modal:
+      Teleport moves the modal to <body> so it is not clipped by the table card or
+      affected by parent stacking contexts. The modal opens when selectedReceipt has
+      row data and closes when that state is reset to null.
+    -->
     <Teleport to="body">
       <div
         v-if="selectedReceipt"
