@@ -1,15 +1,6 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { TabulatorFull as Tabulator } from 'tabulator-tables'
-import * as XLSX from 'xlsx'
-import { jsPDF } from 'jspdf'
-import { applyPlugin } from 'jspdf-autotable'
-
-// Tabulator's PDF downloader expects jsPDF to have the autoTable plugin installed.
-// Importing jspdf-autotable is not enough by itself in this module-based setup; calling
-// applyPlugin mutates the jsPDF constructor so Tabulator can call doc.autoTable(...)
-// during PDF export.
-applyPlugin(jsPDF)
 
 // Vue owns the page-level controls and modal state. Tabulator owns the table DOM.
 // The ref below is the bridge between the two: Vue renders an empty div, then
@@ -231,6 +222,76 @@ function handleEscape(event) {
   }
 }
 
+const vendorBaseUrl = `${import.meta.env.BASE_URL}vendor/`
+const loadedScripts = new Map()
+
+function loadScript(src, globalReady) {
+  // Use plain script tags for optional export libraries instead of dynamic import().
+  // Some older WebKit/Safari builds parse ES modules but fail on dynamic import,
+  // async destructuring, or modern syntax inside optional export chunks. UMD scripts
+  // keep those optional libraries out of the initial module parser path.
+  if (globalReady()) {
+    return Promise.resolve()
+  }
+
+  if (loadedScripts.has(src)) {
+    return loadedScripts.get(src)
+  }
+
+  const promise = new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+
+    script.src = src
+    script.async = true
+    script.onload = () => {
+      if (globalReady()) {
+        resolve()
+      } else {
+        reject(new Error(`Loaded ${src}, but the expected global was not found.`))
+      }
+    }
+    script.onerror = () => reject(new Error(`Unable to load ${src}`))
+
+    document.head.appendChild(script)
+  })
+
+  loadedScripts.set(src, promise)
+  return promise
+}
+
+function loadExportDependency(format) {
+  // CSV, JSON, and HTML exports are handled entirely by Tabulator and do not need
+  // extra libraries. XLSX and PDF are loaded only when requested.
+  if (format === 'xlsx') {
+    return loadScript(`${vendorBaseUrl}xlsx.full.min.js`, () => Boolean(window.XLSX)).then(
+      () => {
+        table.dependencyRegistry.deps.XLSX = window.XLSX
+      },
+    )
+  }
+
+  if (format === 'pdf') {
+    return loadScript(`${vendorBaseUrl}jspdf.umd.min.js`, () =>
+      Boolean(window.jspdf && window.jspdf.jsPDF),
+    )
+      .then(() =>
+        loadScript(`${vendorBaseUrl}jspdf.plugin.autotable.min.js`, () =>
+          Boolean(
+            window.jspdf &&
+              window.jspdf.jsPDF &&
+              window.jspdf.jsPDF.API &&
+              window.jspdf.jsPDF.API.autoTable,
+          ),
+        ),
+      )
+      .then(() => {
+        table.dependencyRegistry.deps.jspdf = window.jspdf
+      })
+  }
+
+  return Promise.resolve()
+}
+
 function downloadTable() {
   if (!table) return
 
@@ -272,7 +333,13 @@ function downloadTable() {
   // By default Tabulator downloads the active rows, meaning current filters/sorts are
   // reflected in the export. The Actions column is marked download:false below so UI
   // buttons do not appear in exported files.
-  table.download(format, `campus-exam-payments.${format}`, exportOptions[format])
+  loadExportDependency(format)
+    .then(() => {
+      table.download(format, `campus-exam-payments.${format}`, exportOptions[format])
+    })
+    .catch((error) => {
+      console.error('Export dependency failed to load:', error)
+    })
 }
 
 onMounted(() => {
@@ -280,13 +347,6 @@ onMounted(() => {
   // this hook runs, tableEl.value is null because the DOM node does not exist yet.
   table = new Tabulator(tableEl.value, {
     data: transactions,
-    // Dependencies are passed explicitly for module bundlers. Tabulator can look for
-    // window.XLSX/window.jspdf in script-tag setups, but Vite bundles dependencies as
-    // modules, so registering them here makes XLSX/PDF export work reliably.
-    dependencies: {
-      XLSX,
-      jspdf: { jsPDF },
-    },
     // fitColumns uses the available table width and keeps this desktop demo from
     // scrolling horizontally at normal viewport sizes. responsiveLayout is disabled so
     // every transaction remains one row instead of collapsing columns into child rows.
@@ -314,7 +374,12 @@ onMounted(() => {
       {
         title: 'Date',
         field: 'date',
-        sorter: 'date',
+        // The generated dates use ISO YYYY-MM-DD format. Lexical string order is the
+        // same as chronological order for this format, so a string sorter is enough.
+        // Avoid Tabulator's built-in "date" sorter here because it delegates to the
+        // "datetime" sorter, which requires Luxon and logs an error for each compare
+        // when Luxon is not registered.
+        sorter: 'string',
         headerFilter: 'input',
         width: 128,
       },

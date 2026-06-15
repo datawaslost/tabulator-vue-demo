@@ -10,4 +10,12 @@ export default defineConfig({
   // The Vue plugin lets Vite compile .vue single-file components, including the
   // <script setup> syntax used in src/App.vue.
   plugins: [vue()],
+
+  build: {
+    // Some dependencies used by PDF/XLSX export ship modern syntax such as optional
+    // chaining and logical assignment. Lowering the production target makes the
+    // GitHub Pages build friendlier to older Safari/WebKit browsers that otherwise
+    // throw parser-level SyntaxError messages before Vue can run.
+    target: 'es2018',
+  },
 })
