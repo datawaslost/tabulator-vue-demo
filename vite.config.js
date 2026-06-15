@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import legacy from '@vitejs/plugin-legacy'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
@@ -8,14 +9,14 @@ export default defineConfig({
   base: '/tabulator-vue-demo/',
 
   // The Vue plugin lets Vite compile .vue single-file components, including the
-  // <script setup> syntax used in src/App.vue.
-  plugins: [vue()],
-
-  build: {
-    // Some dependencies used by PDF/XLSX export ship modern syntax such as optional
-    // chaining and logical assignment. Lowering the production target makes the
-    // GitHub Pages build friendlier to older Safari/WebKit browsers that otherwise
-    // throw parser-level SyntaxError messages before Vue can run.
-    target: 'es2018',
-  },
+  // <script setup> syntax used in src/App.vue. The legacy plugin adds a second,
+  // transpiled "nomodule" build for Safari/WebKit versions that can download ES
+  // modules but still fail to parse some syntax produced by modern dependencies.
+  plugins: [
+    vue(),
+    legacy({
+      targets: ['defaults', 'safari >= 12', 'ios_saf >= 12'],
+      modernPolyfills: true,
+    }),
+  ],
 })
